@@ -2,7 +2,14 @@
 from __future__ import annotations
 
 import hashlib
+import base64
 import re
+import logging
+import shutil
+import tarfile
+import tempfile
+import urllib.parse
+import urllib.request
 from datetime import datetime, timezone, timedelta
 from pathlib import Path
 from typing import Generator
@@ -30,6 +37,8 @@ class Settings(BaseSettings):
     admin_token: str = "dev-change-me"
     story_published_at: str = ""
     maxmind_db_path: str = ""
+    maxmind_account_id: str = ""
+    maxmind_license_key: str = ""
     trust_proxy_headers: bool = False
     # Comma-separated origins, for example:
     # http://localhost:5173,https://sparringscope.vercel.app
@@ -253,8 +262,105 @@ def video_dict(v: Video) -> dict:
     }
 
 
+logger = logging.getLogger("sparringscope.geoip")
+
+
+def ensure_maxmind_database() -> None:
+    """
+    Ensure the GeoLite2 City MMDB exists at MAXMIND_DB_PATH.
+
+    The database is downloaded only when a path and both MaxMind credentials
+    are configured and the target file does not already exist.
+    """
+    target_value = settings.maxmind_db_path.strip()
+    account_id = settings.maxmind_account_id.strip()
+    license_key = settings.maxmind_license_key.strip()
+
+    if not target_value:
+        logger.info("MAXMIND_DB_PATH is empty; IP-based location will be unavailable.")
+        return
+
+    target = Path(target_value)
+    if target.is_file() and target.stat().st_size > 0:
+        logger.info("GeoLite2 database already exists.")
+        return
+
+    if not account_id or not license_key:
+        logger.warning(
+            "GeoLite2 database is missing and MaxMind credentials are not configured."
+        )
+        return
+
+    target.parent.mkdir(parents=True, exist_ok=True)
+    query = urllib.parse.urlencode({"suffix": "tar.gz"})
+    download_url = (
+        "https://download.maxmind.com/geoip/databases/"
+        f"GeoLite2-City/download?{query}"
+    )
+    credentials = base64.b64encode(
+        f"{account_id}:{license_key}".encode("utf-8")
+    ).decode("ascii")
+    request = urllib.request.Request(
+        download_url,
+        headers={
+            "User-Agent": "SparringScope/1.0",
+            "Authorization": f"Basic {credentials}",
+        },
+    )
+
+    archive_path = None
+    temporary_db_path = None
+    try:
+        with tempfile.NamedTemporaryFile(
+            prefix="geolite2-", suffix=".tar.gz", delete=False
+        ) as archive_file:
+            archive_path = Path(archive_file.name)
+            with urllib.request.urlopen(request, timeout=90) as response:
+                shutil.copyfileobj(response, archive_file)
+
+        with tarfile.open(archive_path, mode="r:gz") as archive:
+            database_member = next(
+                (
+                    member for member in archive.getmembers()
+                    if member.isfile()
+                    and member.name.endswith("/GeoLite2-City.mmdb")
+                ),
+                None,
+            )
+            if database_member is None:
+                raise RuntimeError("GeoLite2-City.mmdb was not found in the archive.")
+
+            extracted = archive.extractfile(database_member)
+            if extracted is None:
+                raise RuntimeError("Could not read GeoLite2-City.mmdb from the archive.")
+
+            with tempfile.NamedTemporaryFile(
+                prefix="geolite2-city-", suffix=".mmdb",
+                dir=target.parent, delete=False
+            ) as database_file:
+                temporary_db_path = Path(database_file.name)
+                shutil.copyfileobj(extracted, database_file)
+
+        if temporary_db_path.stat().st_size == 0:
+            raise RuntimeError("Downloaded GeoLite2 database is empty.")
+
+        temporary_db_path.replace(target)
+        logger.info("GeoLite2 City database downloaded successfully.")
+    except Exception:
+        logger.exception(
+            "Could not download GeoLite2 City database. "
+            "Location analytics will report Unknown until it is available."
+        )
+    finally:
+        if archive_path and archive_path.exists():
+            archive_path.unlink(missing_ok=True)
+        if temporary_db_path and temporary_db_path.exists():
+            temporary_db_path.unlink(missing_ok=True)
+
+
 @app.on_event("startup")
 def seed_demo_videos():
+    ensure_maxmind_database()
     # Preserve the two videos previously hardcoded in GET /api/videos.
     with SessionLocal() as db:
         if (db.scalar(select(func.count()).select_from(Video)) or 0) == 0:
