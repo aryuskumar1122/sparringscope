@@ -2,20 +2,19 @@
 from __future__ import annotations
 
 import hashlib
-import base64
 import re
 import logging
 import shutil
 import tarfile
 import tempfile
 import urllib.parse
-import urllib.request
 from datetime import datetime, timezone, timedelta
 from pathlib import Path
 from typing import Generator
 from urllib.parse import parse_qs, urlparse
 
 import geoip2.database
+import requests
 from fastapi import Depends, FastAPI, Header, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
@@ -297,26 +296,29 @@ def ensure_maxmind_database() -> None:
         "https://download.maxmind.com/geoip/databases/"
         f"GeoLite2-City/download?{query}"
     )
-    credentials = base64.b64encode(
-        f"{account_id}:{license_key}".encode("utf-8")
-    ).decode("ascii")
-    request = urllib.request.Request(
-        download_url,
-        headers={
-            "User-Agent": "SparringScope/1.0",
-            "Authorization": f"Basic {credentials}",
-        },
-    )
-
     archive_path = None
     temporary_db_path = None
     try:
-        with tempfile.NamedTemporaryFile(
-            prefix="geolite2-", suffix=".tar.gz", delete=False
-        ) as archive_file:
-            archive_path = Path(archive_file.name)
-            with urllib.request.urlopen(request, timeout=90) as response:
-                shutil.copyfileobj(response, archive_file)
+        # requests strips Authorization when a redirect changes hosts.
+        # This is important because MaxMind redirects downloads to a
+        # presigned Cloudflare R2 URL; never forward the license key there.
+        with requests.get(
+            download_url,
+            auth=(account_id, license_key),
+            headers={"User-Agent": "SparringScope/1.0"},
+            stream=True,
+            timeout=(15, 120),
+            allow_redirects=True,
+        ) as response:
+            response.raise_for_status()
+
+            with tempfile.NamedTemporaryFile(
+                prefix="geolite2-", suffix=".tar.gz", delete=False
+            ) as archive_file:
+                archive_path = Path(archive_file.name)
+                for chunk in response.iter_content(chunk_size=1024 * 1024):
+                    if chunk:
+                        archive_file.write(chunk)
 
         with tarfile.open(archive_path, mode="r:gz") as archive:
             database_member = next(
