@@ -1,6 +1,7 @@
 
 import React, { useEffect, useMemo, useState } from "react";
 import { createRoot } from "react-dom/client";
+import { apiUrl } from "./lib/api";
 import {
   Activity,
   ArrowUpRight,
@@ -51,7 +52,7 @@ function PublicPage() {
 
   useEffect(() => {
     // Record a page visit.
-    fetch("/api/track", {
+    fetch(apiUrl("/api/track"), {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
@@ -69,7 +70,7 @@ function PublicPage() {
     // Fetch videos from the backend.
     async function loadVideos() {
       try {
-        const response = await fetch("/api/videos");
+        const response = await fetch(apiUrl("/api/videos"));
 
         if (!response.ok) {
           throw new Error("Video API request failed");
@@ -242,7 +243,7 @@ function Dashboard() {
     setError("");
 
     try {
-      const response = await fetch("/api/admin/analytics", {
+      const response = await fetch(apiUrl("/api/admin/analytics"), {
         headers: {
           Authorization: `Bearer ${value}`,
         },
