@@ -387,6 +387,37 @@ def database_health(db: Session = Depends(get_db)):
     return {"status": "ok", "database": "connected"}
 
 
+@app.get("/health/geoip")
+def geoip_health():
+    """Report GeoLite2 file availability without exposing credentials or file paths."""
+    configured = bool(settings.maxmind_db_path.strip())
+    target = Path(settings.maxmind_db_path) if configured else None
+    exists = bool(target and target.is_file())
+    size_bytes = target.stat().st_size if exists and target else 0
+
+    readable = False
+    database_valid = False
+    if exists and target and size_bytes > 0:
+        try:
+            with geoip2.database.Reader(str(target)) as reader:
+                # A successful metadata lookup confirms the MMDB can be opened.
+                reader.metadata()
+                readable = True
+                database_valid = True
+        except Exception:
+            readable = True
+            database_valid = False
+
+    return {
+        "configured": configured,
+        "file_exists": exists,
+        "file_size_bytes": size_bytes,
+        "readable": readable,
+        "database_valid": database_valid,
+        "location_lookup_ready": database_valid,
+    }
+
+
 @app.get("/api/videos")
 def get_videos(db: Session = Depends(get_db)):
     items = db.scalars(select(Video).order_by(Video.id.desc())).all()
