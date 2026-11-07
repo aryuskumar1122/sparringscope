@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import hashlib
+import ipaddress
 import re
 import logging
 import shutil
@@ -157,11 +158,28 @@ def require_admin(authorization: str | None = Header(default=None)) -> None:
 
 
 def get_client_ip(request: Request) -> str | None:
-    if settings.trust_proxy_headers:
-        forwarded = request.headers.get("x-forwarded-for")
-        if forwarded:
-            return forwarded.split(",")[0].strip()
-    return request.client.host if request.client else None
+    """
+    Get the visitor IP from Render's Cloudflare edge header.
+
+    Render routes public traffic through Cloudflare, which supplies
+    CF-Connecting-IP. Validate it before using it for approximate GeoIP
+    lookup. Do not trust arbitrary X-Forwarded-For values.
+    """
+    cloudflare_ip = request.headers.get("cf-connecting-ip")
+    if cloudflare_ip:
+        try:
+            return str(ipaddress.ip_address(cloudflare_ip.strip()))
+        except ValueError:
+            pass
+
+    # Fallback is the immediate peer (usually a proxy), not a claimed
+    # visitor address. This may resolve to an infrastructure location.
+    if request.client:
+        try:
+            return str(ipaddress.ip_address(request.client.host))
+        except ValueError:
+            return None
+    return None
 
 
 def coarse_location(ip: str | None) -> tuple[str | None, str | None, str | None]:
@@ -387,34 +405,39 @@ def database_health(db: Session = Depends(get_db)):
     return {"status": "ok", "database": "connected"}
 
 
+
 @app.get("/health/geoip")
 def geoip_health():
-    """Report GeoLite2 file availability without exposing credentials or file paths."""
+    """Report GeoLite2 file readiness without exposing credentials or IPs."""
     configured = bool(settings.maxmind_db_path.strip())
-    target = Path(settings.maxmind_db_path) if configured else None
-    exists = bool(target and target.is_file())
-    size_bytes = target.stat().st_size if exists and target else 0
+    path = Path(settings.maxmind_db_path) if configured else None
+
+    # Keep the Path check explicit so type checkers know path is not None.
+    exists = path is not None and path.is_file()
+    size = 0
+    if path is not None and exists:
+        size = path.stat().st_size
 
     readable = False
-    database_valid = False
-    if exists and target and size_bytes > 0:
+    valid = False
+
+    if exists and size > 0:
         try:
-            with geoip2.database.Reader(str(target)) as reader:
-                # A successful metadata lookup confirms the MMDB can be opened.
-                reader.metadata()
+            with geoip2.database.Reader(str(path)) as reader:
+                metadata = reader.metadata()
                 readable = True
-                database_valid = True
+                valid = bool(metadata and metadata.database_type)
         except Exception:
-            readable = True
-            database_valid = False
+            readable = False
+            valid = False
 
     return {
         "configured": configured,
         "file_exists": exists,
-        "file_size_bytes": size_bytes,
+        "file_size_bytes": size,
         "readable": readable,
-        "database_valid": database_valid,
-        "location_lookup_ready": database_valid,
+        "database_valid": valid,
+        "location_lookup_ready": configured and exists and readable and valid,
     }
 
 
