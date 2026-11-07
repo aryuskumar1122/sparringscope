@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import { apiUrl } from "../lib/api";
 import { ArrowLeft, ArrowUpRight, Activity } from "lucide-react";
 import VideoCard from "./VideoCard";
 
@@ -9,7 +10,7 @@ export default function CategoryPage({ category, title, description }) {
 
   useEffect(() => {
     let active = true;
-    fetch("/api/videos")
+    fetch(apiUrl("/api/videos"))
       .then((response) => {
         if (!response.ok) throw new Error("Failed to load videos");
         return response.json();
