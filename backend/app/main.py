@@ -18,18 +18,47 @@ from sqlalchemy.orm import DeclarativeBase, Mapped, Session, mapped_column, sess
 
 
 class Settings(BaseSettings):
-    model_config = SettingsConfigDict(env_file="../.env", extra="ignore")
+    model_config = SettingsConfigDict(
+        env_file="../.env",
+        env_file_encoding="utf-8",
+        extra="ignore",
+        case_sensitive=False,
+    )
+
     app_name: str = "SparringScope"
     database_url: str = "sqlite:///./sparringscope.db"
     admin_token: str = "dev-change-me"
     story_published_at: str = ""
     maxmind_db_path: str = ""
     trust_proxy_headers: bool = False
+    # Comma-separated origins, for example:
+    # http://localhost:5173,https://sparringscope.vercel.app
+    cors_origins: str = "http://localhost:5173"
+
+
+def normalize_database_url(database_url: str) -> str:
+    """Use SQLAlchemy's psycopg 3 dialect for PostgreSQL URLs."""
+    url = database_url.strip()
+
+    if url.startswith("postgres://"):
+        return url.replace("postgres://", "postgresql+psycopg://", 1)
+
+    if url.startswith("postgresql://"):
+        return url.replace("postgresql://", "postgresql+psycopg://", 1)
+
+    return url
 
 
 settings = Settings()
-connect_args = {"check_same_thread": False} if settings.database_url.startswith("sqlite") else {}
-engine = create_engine(settings.database_url, connect_args=connect_args, pool_pre_ping=True)
+database_url = normalize_database_url(settings.database_url)
+connect_args = {"check_same_thread": False} if database_url.startswith("sqlite") else {}
+
+engine = create_engine(
+    database_url,
+    connect_args=connect_args,
+    pool_pre_ping=True,
+    pool_recycle=300,
+)
 SessionLocal = sessionmaker(bind=engine, autoflush=False, autocommit=False)
 
 
@@ -95,12 +124,19 @@ class VideoUpdate(BaseModel):
     youtube_url: str | None = Field(default=None, min_length=8, max_length=500)
 
 
-app = FastAPI(title=settings.app_name, version="0.2.0")
+app = FastAPI(title=settings.app_name, version="0.3.0")
+
+allowed_origins = [
+    origin.strip().rstrip("/")
+    for origin in settings.cors_origins.split(",")
+    if origin.strip()
+]
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:5173"],
+    allow_origins=allowed_origins,
     allow_credentials=False,
-    allow_methods=["GET", "POST", "PATCH", "DELETE"],
+    allow_methods=["GET", "POST", "PATCH", "DELETE", "OPTIONS"],
     allow_headers=["Content-Type", "Authorization"],
 )
 
@@ -234,6 +270,13 @@ def seed_demo_videos():
 @app.get("/health")
 def health():
     return {"status": "ok", "service": "sparringscope-api"}
+
+
+@app.get("/health/db")
+def database_health(db: Session = Depends(get_db)):
+    """Check that the API can reach its configured database."""
+    db.execute(select(1))
+    return {"status": "ok", "database": "connected"}
 
 
 @app.get("/api/videos")
