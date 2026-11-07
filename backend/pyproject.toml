@@ -1,0 +1,19 @@
+[project]
+name = "sparringscope-api"
+version = "0.1.0"
+description = "Privacy-aware sparring video page analytics"
+requires-python = ">=3.12"
+dependencies = [
+  "fastapi>=0.115",
+  "uvicorn[standard]>=0.34",
+  "sqlalchemy>=2.0",
+  "psycopg[binary]>=3.2",
+  "pydantic-settings>=2.7",
+  "geoip2>=4.8",
+]
+
+[dependency-groups]
+dev = ["pytest>=8.3", "httpx>=0.28", "ruff>=0.9"]
+
+[tool.ruff]
+line-length = 100
